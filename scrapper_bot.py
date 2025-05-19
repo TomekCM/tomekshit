@@ -18,9 +18,7 @@ import traceback
 import asyncio
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.safari.options import Options as SafariOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.safari.service import Service as SafariService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -64,219 +62,46 @@ ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
 SUBSCRIBERS_FILE = os.path.join(DATA_DIR, "subscribers.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 API_LIMITS_FILE = os.path.join(DATA_DIR, "api_limits.json")
-PROXIES_FILE = os.path.join(DATA_DIR, "proxies.json")
 CACHE_FILE = os.path.join(DATA_DIR, "cache.json")
-BROWSER_STATS_FILE = os.path.join(DATA_DIR, "browser_stats.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
-def update_browser_stats(browser_name, action_type, success):
-    """Обновляет статистику использования браузеров"""
-    try:
-        if os.path.exists(BROWSER_STATS_FILE):
-            with open(BROWSER_STATS_FILE, 'r') as f:
-                stats = json.load(f)
-        else:
-            stats = {"browsers": {}, "last_update": int(time.time())}
-
-        # Инициализируем данные для браузера, если их нет
-        if browser_name not in stats["browsers"]:
-            stats["browsers"][browser_name] = {
-                "total_attempts": 0,
-                "successful_attempts": 0,
-                "captchas": 0,
-                "errors": 0,
-                "last_success": None
-            }
-
-        # Обновляем статистику
-        stats["browsers"][browser_name]["total_attempts"] += 1
-
-        if action_type == "captcha":
-            stats["browsers"][browser_name]["captchas"] += 1
-
-        if action_type == "error":
-            stats["browsers"][browser_name]["errors"] += 1
-
-        if success:
-            stats["browsers"][browser_name]["successful_attempts"] += 1
-            stats["browsers"][browser_name]["last_success"] = int(time.time())
-
-        stats["last_update"] = int(time.time())
-
-        with open(BROWSER_STATS_FILE, 'w') as f:
-            json.dump(stats, f)
-
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении статистики браузеров: {e}")
-
-
 class HTMLSession:
-    def __init__(self, use_safari=True, incognito=False, driver=None, browser_name=None):
-        self.use_safari = use_safari
-        self.incognito = incognito
+    def __init__(self):
         self.retry_count = 0
         self.max_retries = 2
-        self.browser_name = browser_name or ("Safari" if use_safari else "Chrome")
+        self.browser_name = "Chrome"
 
-        # Статистика для этой сессии
-        self.stats = {
-            "attempts": 0,
-            "successes": 0,
-            "failures": 0,
-            "captchas": 0,
-            "timeouts": 0
-        }
-
-        # Если драйвер был передан снаружи
-        if driver:
-            self.driver = driver
-        # Инициализация Safari
-        elif use_safari and platform.system() == "Darwin":
-            logger.info(f"Инициализация Safari WebDriver")
-            try:
-                options = SafariOptions()
-                self.driver = webdriver.Safari(options=options)
-                self.driver.set_page_load_timeout(25)  # Уменьшаем таймаут
-
-                # ВАЖНО: Проверка авторизации Twitter в Safari
-                cookies_file = os.path.join(DATA_DIR, f"twitter_cookies_safari.json")
-                if os.path.exists(cookies_file):
-                    self.driver.get("https://twitter.com")
-                    try:
-                        with open(cookies_file, "r") as f:
-                            cookies = json.load(f)
-                            for cookie in cookies:
-                                try:
-                                    self.driver.add_cookie(cookie)
-                                except:
-                                    pass
-                    except Exception as e:
-                        logger.warning(f"Не удалось загрузить куки для Safari: {e}")
-
-                logger.info("Safari WebDriver успешно инициализирован")
-            except Exception as e:
-                logger.error(f"Не удалось инициализировать Safari WebDriver: {e}")
-                raise
         # Инициализация Chrome
-        else:
-            logger.info(f"Инициализация Chrome WebDriver")
-            options = ChromeOptions()
+        logger.info(f"Инициализация Chrome WebDriver")
+        options = ChromeOptions()
 
-            # НЕ используем headless режим на Mac
-            if platform.system() != "Darwin":
-                options.add_argument("--headless=new")
+        # Настройки для Chrome
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-            settings = get_settings()
-            chrome_profile = settings.get("chrome_profile_path",
-                                          os.path.join(os.path.expanduser('~'), 'TwitterBotProfile'))
-            os.makedirs(chrome_profile, exist_ok=True)
-            options.add_argument(f"--user-data-dir={chrome_profile}")
-            options.add_argument("--disable-extensions")  # Отключаем расширения
-            options.add_argument("--disable-plugins")  # Отключаем плагины
-            options.add_argument("--disable-application-cache")  # Отключаем кеш
-            options.add_argument("--log-level=3")  # Только критические ошибки
-            options.add_argument("--silent")  # Минимизация вывода
-
-            # Дополнительные опции для стабильности на macOS
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-background-networking")
-            options.add_argument("--disable-notifications")
-            options.add_argument("--disable-extensions")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--disable-logging")
-            os.environ['PYTHONIOENCODING'] = 'utf-8'
-            os.environ['WDM_LOG_LEVEL'] = '0'  # Уменьшить логи WebDriverManager
-
-            # Предотвращаем закрытие Chrome после завершения сессии
-            options.add_experimental_option("detach", True)
-
-            try:
-                self.driver = webdriver.Chrome(
-                    service=ChromeService(ChromeDriverManager().install()),
-                    options=options
-                )
-                self.driver.set_page_load_timeout(25)
-            except Exception as e:
-                logger.error(f"Не удалось инициализировать Chrome WebDriver: {e}")
-                raise
+        try:
+            self.driver = webdriver.Chrome(
+                service=ChromeService(ChromeDriverManager().install()),
+                options=options
+            )
+            self.driver.set_page_load_timeout(25)
+        except Exception as e:
+            logger.error(f"Не удалось инициализировать Chrome WebDriver: {e}")
+            raise
 
         self.driver.implicitly_wait(10)
-        logger.info(f"WebDriver {self.browser_name} инициализирован: {type(self.driver).__name__}")
+        logger.info(f"WebDriver Chrome инициализирован")
 
-        # Глобальная статистика
-        update_browser_stats(self.browser_name, "init", True)
-
-        # Сохраняем куки Twitter после инициализации
-        self.save_twitter_cookies()
-
-    def save_browser_state(driver, browser_name):
-        """Сохраняет состояние браузера (куки) для повторного использования"""
-        try:
-            current_url = driver.current_url
-            if "twitter.com" in current_url:
-                # Сохраняем куки Twitter
-                cookies_file = os.path.join(DATA_DIR, f"twitter_cookies_{browser_name.lower().replace(' ', '_')}.json")
-                cookies = driver.get_cookies()
-                with open(cookies_file, "w") as f:
-                    json.dump(cookies, f)
-                logger.info(f"Twitter куки сохранены для {browser_name}: {len(cookies)} куки")
-
-                # Сохраняем скриншот для отладки
-                screenshot_path = os.path.join(DATA_DIR, f"{browser_name.lower()}_auth_state.png")
-                driver.save_screenshot(screenshot_path)
-                logger.info(f"Скриншот текущего состояния сохранен: {screenshot_path}")
-
-                # Проверяем авторизацию
-                logger.info(f"URL после авторизации: {current_url}")
-                if "login" not in current_url:
-                    logger.info(f"✅ {browser_name} успешно авторизован в Twitter!")
-                    return True
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении состояния {browser_name}: {e}")
-
-        return False
-
-    def save_twitter_cookies(self):
-        """Сохраняет куки Twitter если находимся на twitter.com"""
-        try:
-            current_url = self.driver.current_url
-            if "twitter.com" in current_url and "login" not in current_url:
-                cookies_file = os.path.join(DATA_DIR,
-                                            f"twitter_cookies_{self.browser_name.lower().replace(' ', '_')}.json")
-                cookies = self.driver.get_cookies()
-                with open(cookies_file, "w") as f:
-                    json.dump(cookies, f)
-                logger.info(f"Куки Twitter сохранены для {self.browser_name}")
-        except Exception as e:
-            logger.error(f"Не удалось сохранить куки Twitter: {e}")
-
-    def bypass_captcha(self):
-        """Пытается обнаружить и преодолеть капчу"""
-        try:
-            # Проверка наличия кнопки или фрейма с капчей
-            captcha_elements = self.driver.find_elements(By.XPATH,
-                                                         "//*[contains(@src, 'captcha') or contains(@title, 'captcha') or contains(@id, 'captcha')]")
-
-            if captcha_elements:
-                logger.info("Обнаружена капча, пытаемся преодолеть...")
-
-                # Имитация задержек и движения мыши
-                self.driver.execute_script("window.scrollBy(0, 100);")
-                time.sleep(random.uniform(1, 2))
-                self.driver.execute_script("window.scrollBy(0, -50);")
-
-                # Возможно здесь можно добавить взаимодействие с API разрешения капчи
-                return False
-        except:
-            pass
-
-        return False
-
-    def get(self, url, proxies=None, timeout=25):
+    def get(self, url, timeout=25):
         try:
             # Добавляем параметры для обхода кеширования
             if '?' not in url:
@@ -284,24 +109,8 @@ class HTMLSession:
             else:
                 url += f"&_={int(time.time())}"
 
-            # Добавляем случайный параметр для дальнейшего обхода кеширования
-            url += f"&_cb={int(time.time())}"
-
-            self.stats["attempts"] += 1
-            logger.info(f"Загружаю страницу через {self.browser_name}: {url}")
-
-            # Проверяем текущий URL
-            current_url = self.driver.current_url
-            # Если текущий URL уже содержит twitter и username, просто обновляем страницу
-            if "twitter.com" in current_url and url.split("?")[0].split("/")[-1] in current_url:
-                logger.info(f"Уже на странице Twitter, просто обновляем с новыми параметрами")
-                self.driver.get(url)
-            else:
-                # Иначе загружаем новый URL
-                self.driver.get(url)
-
-            # Добавляем имитацию человеческого поведения
-            self._human_like_behavior()
+            logger.info(f"Загружаю страницу: {url}")
+            self.driver.get(url)
 
             # Ждем загрузку контента
             WebDriverWait(self.driver, timeout).until(
@@ -311,60 +120,11 @@ class HTMLSession:
             # Даем время для загрузки динамического контента
             time.sleep(random.uniform(2, 3.5))
 
-            # Проверяем наличие капчи или блокировки
-            page_source = self.driver.page_source.lower()
-            if "captcha" in page_source or "blocked" in page_source or "rate limit" in page_source:
-                self.stats["captchas"] += 1
-                logger.warning(f"Обнаружена капча или блокировка на странице {url} в {self.browser_name}")
-                update_browser_stats(self.browser_name, "captcha", False)
-
-                # Пробуем сохранить снимок экрана для диагностики
-                try:
-                    screenshot_path = os.path.join(DATA_DIR, f"captcha_{int(time.time())}.png")
-                    self.driver.save_screenshot(screenshot_path)
-                    logger.info(f"Сохранен снимок капчи: {screenshot_path}")
-                except:
-                    pass
-
-                return self
-
-            # Успешная загрузка
-            self.stats["successes"] += 1
-            update_browser_stats(self.browser_name, "success", True)
             return self
 
         except Exception as e:
-            self.stats["failures"] += 1
-            if "timeout" in str(e).lower():
-                self.stats["timeouts"] += 1
-
-            logger.error(f"Ошибка при загрузке страницы {url} через {self.browser_name}: {e}")
-            update_browser_stats(self.browser_name, "error", False)
+            logger.error(f"Ошибка при загрузке страницы {url}: {e}")
             return self
-
-    def _human_like_behavior(self):
-        """Имитирует поведение человека в браузере"""
-        try:
-            # Случайная пауза перед действиями
-            time.sleep(random.uniform(0.5, 1.5))
-
-            # Выполняем случайный скроллинг
-            scroll_amount = random.randint(100, 300)
-            self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-            time.sleep(random.uniform(0.3, 0.8))
-
-            # Еще один скролл
-            scroll_amount = random.randint(200, 500)
-            self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-            time.sleep(random.uniform(0.5, 1))
-
-            # Иногда скроллим назад немного
-            if random.random() > 0.7:
-                self.driver.execute_script(f"window.scrollBy(0, -{random.randint(50, 150)});")
-                time.sleep(random.uniform(0.2, 0.5))
-        except:
-            # Игнорируем ошибки в имитации поведения
-            pass
 
     @property
     def html(self):
@@ -373,9 +133,9 @@ class HTMLSession:
     def close(self):
         try:
             self.driver.quit()
-            logger.info(f"WebDriver {self.browser_name} закрыт")
+            logger.info(f"WebDriver закрыт")
         except Exception as e:
-            logger.error(f"Ошибка при закрытии WebDriver {self.browser_name}: {e}")
+            logger.error(f"Ошибка при закрытии WebDriver: {e}")
 
     def __enter__(self):
         return self
@@ -391,6 +151,9 @@ def load_json(path, default):
     except (FileNotFoundError, json.JSONDecodeError):
         return default
 
+def error_handler(update, context):
+    logger.error(f"Exception while handling an update: {context.error}")
+    # можно отправлять уведомление админам о критических ошибках
 
 def is_admin(user_id):
     settings = get_settings()
@@ -576,7 +339,6 @@ def get_settings():
     settings = load_json(SETTINGS_FILE, {
         "check_interval": DEFAULT_CHECK_INTERVAL,
         "enabled": True,
-        "use_proxies": False,
         "scraper_methods": ["nitter", "web", "api"],
         "max_retries": 3,
         "cache_expiry": 1800,
@@ -604,30 +366,12 @@ def update_setting(key, value):
     return settings
 
 
-def get_proxies():
-    return load_json(PROXIES_FILE, {"proxies": []})
-
-
-def get_random_proxy():
-    proxies_data = get_proxies()
-    proxy_list = proxies_data.get("proxies", [])
-
-    if not proxy_list:
-        return None
-
-    proxy = random.choice(proxy_list)
-    if proxy.startswith("http"):
-        return {"http": proxy, "https": proxy}
-    else:
-        return {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-
-
 def clean_account_data(username):
     logger.info(f"Очистка всех данных для аккаунта @{username}")
 
-    delete_from_cache("tweets", f"api_{username.lower()}")
     delete_from_cache("tweets", f"web_{username.lower()}")
     delete_from_cache("tweets", f"nitter_{username.lower()}")
+    delete_from_cache("tweets", f"api_{username.lower()}")
     delete_from_cache("users", username.lower())
 
     accounts = init_accounts()
@@ -651,339 +395,6 @@ def clean_account_data(username):
         save_accounts(accounts)
 
     logger.info(f"Данные для аккаунта @{username} очищены")
-
-
-def login_to_twitter(driver, platform_name="Safari"):
-    """Вход в Twitter с сохранением куки после успеха"""
-    # Выбор учетных данных в зависимости от браузера
-    if platform_name.lower() == "chrome":
-        username = os.getenv("TWITTER_USERNAME_CHROME", os.getenv("TWITTER_USERNAME", ""))
-        password = os.getenv("TWITTER_PASSWORD_CHROME", os.getenv("TWITTER_PASSWORD", ""))
-    else:  # Safari или любой другой
-        username = os.getenv("TWITTER_USERNAME", "")
-        password = os.getenv("TWITTER_PASSWORD", "")
-
-    if not username or not password:
-        logger.warning(f"Не удалось найти учетные данные Twitter для {platform_name} в переменных окружения")
-        return False
-
-    # Проверяем текущий URL, возможно мы уже авторизованы
-    current_url = driver.current_url
-    if "twitter.com/home" in current_url or "twitter.com/explore" in current_url:
-        logger.info(f"Уже авторизованы в Twitter через {platform_name}")
-
-        # Сохраняем куки для будущих сессий
-        try:
-            cookies = driver.get_cookies()
-            cookies_file = os.path.join(DATA_DIR, f"twitter_cookies_{platform_name.lower()}.json")
-            with open(cookies_file, "w") as f:
-                json.dump(cookies, f)
-            logger.info(f"Куки Twitter сохранены для будущих сессий {platform_name}")
-        except Exception as e:
-            logger.error(f"Не удалось сохранить куки для {platform_name}: {e}")
-
-        return True
-
-    try:
-        logger.info(f"Пытаемся войти в Twitter через {platform_name}...")
-        driver.get("https://twitter.com/login")
-        time.sleep(5)
-
-        # Сделаем скриншот для диагностики
-        try:
-            screenshot_path = os.path.join(DATA_DIR, f"twitter_login_{platform_name.lower()}_{int(time.time())}.png")
-            driver.save_screenshot(screenshot_path)
-            logger.info(f"Сохранен скриншот страницы входа: {screenshot_path}")
-        except:
-            pass
-
-        try:
-            username_field = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "text"))
-            )
-            username_field.send_keys(username)
-
-            next_button = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Next')]"))
-            )
-            next_button.click()
-            time.sleep(3)
-
-            password_field = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "password"))
-            )
-            password_field.send_keys(password)
-
-            login_button = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Log in')]"))
-            )
-            login_button.click()
-
-            # Ожидаем или редирект на домашнюю страницу, или ошибку
-            WebDriverWait(driver, 15).until(
-                lambda d: "login" not in d.current_url.lower() or "error" in d.current_url.lower()
-            )
-
-            # Проверяем успешность входа
-            if "login" not in driver.current_url.lower() and "error" not in driver.current_url.lower():
-                logger.info(f"✅ Успешно вошли в Twitter через {platform_name}")
-
-                # Сохраняем куки для будущих сессий
-                try:
-                    cookies = driver.get_cookies()
-                    cookies_file = os.path.join(DATA_DIR, f"twitter_cookies_{platform_name.lower()}.json")
-                    with open(cookies_file, "w") as f:
-                        json.dump(cookies, f)
-                    logger.info(f"Куки Twitter сохранены для будущих сессий {platform_name}")
-                except Exception as e:
-                    logger.error(f"Не удалось сохранить куки для {platform_name}: {e}")
-
-                return True
-            else:
-                logger.warning(f"❌ Не удалось войти через {platform_name} - проверьте правильность учетных данных")
-                return False
-
-        except Exception as e:
-            logger.error(f"Ошибка при вводе данных для входа в {platform_name}: {e}")
-
-            # Альтернативный способ входа
-            try:
-                username_field = driver.find_element(By.CSS_SELECTOR, "input[autocomplete='username']")
-                username_field.send_keys(username)
-                driver.find_element(By.CSS_SELECTOR, "div[role='button']").click()
-                time.sleep(3)
-
-                password_field = driver.find_element(By.CSS_SELECTOR, "input[name='password']")
-                password_field.send_keys(password)
-                driver.find_element(By.CSS_SELECTOR, "div[data-testid='LoginButton']").click()
-                time.sleep(5)
-
-                # Проверяем успешность входа
-                if "login" not in driver.current_url.lower():
-                    logger.info(f"✅ Успешно вошли альтернативным способом через {platform_name}")
-
-                    # Сохраняем куки для будущих сессий
-                    try:
-                        cookies = driver.get_cookies()
-                        cookies_file = os.path.join(DATA_DIR, f"twitter_cookies_{platform_name.lower()}.json")
-                        with open(cookies_file, "w") as f:
-                            json.dump(cookies, f)
-                        logger.info(f"Куки Twitter сохранены для будущих сессий {platform_name}")
-                    except Exception as e:
-                        logger.error(f"Не удалось сохранить куки для {platform_name}: {e}")
-
-                    return True
-                return False
-            except Exception as e2:
-                logger.error(f"Альтернативный вход через {platform_name} тоже не удался: {e2}")
-                return False
-
-    except Exception as e:
-        logger.error(f"Ошибка при входе в Twitter через {platform_name}: {e}")
-        return False
-
-def get_browser_session(use_safari=True, incognito=False):
-    """Получает сессию браузера с возможностью выбора между Safari и Chrome"""
-    browser_name = "Safari" if use_safari else "Chrome"
-    if incognito:
-        browser_name += " (инкогнито)"
-
-    logger.info(f"Инициализация {browser_name} WebDriver")
-
-    try:
-        # Для Chrome в macOS нужны особые настройки
-        if not use_safari and platform.system() == "Darwin":
-            options = ChromeOptions()
-            chrome_profile = os.path.join(os.path.expanduser('~'), 'ChromeDriverProfile')
-            os.makedirs(chrome_profile, exist_ok=True)
-
-            # Важные опции для стабильности Chrome на macOS
-            options.add_argument(f"--user-data-dir={chrome_profile}")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-
-            # Эти опции помогут избежать ошибки DevToolsActivePort
-            options.add_argument("--disable-background-networking")
-            options.add_argument("--disable-background-timer-throttling")
-            options.add_argument("--disable-extensions")
-            options.add_argument("--disable-default-apps")
-
-            # Важно: НЕ используем headless для Chrome на macOS
-            options.add_experimental_option("detach", True)  # Не закрывать Chrome после завершения сессии
-
-            service = ChromeService(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
-            session = HTMLSession(driver=driver, browser_name=browser_name)
-            return session
-        else:
-            # Создаем экземпляр HTMLSession с нужными параметрами
-            session = HTMLSession(use_safari=use_safari, incognito=incognito)
-            return session
-
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации {browser_name}: {e}")
-        traceback.print_exc()
-        raise
-
-def launch_safari_for_scraping():
-    """Открывает Twitter в Safari для авторизации"""
-    import subprocess
-    import platform
-
-    if platform.system() != "Darwin":  # Проверка что это macOS
-        logger.error("Safari доступен только на macOS")
-        return False
-
-    try:
-        # Выполним дополнительные подготовительные команды
-        try:
-            subprocess.run(['sudo', 'safaridriver', '--enable'], check=True)
-            logger.info("SafariDriver включен с повышенными привилегиями")
-        except Exception as e:
-            logger.warning(f"Не удалось включить SafariDriver: {e}")
-
-        try:
-            subprocess.run(['sudo', 'mkdir', '-p', '/var/db/webkit/WebKitDriverStorage/'], check=False)
-            subprocess.run(['sudo', 'chown', '-R', '_webkitagent', '/var/db/webkit/WebKitDriverStorage/'], check=False)
-            logger.info("Настроены права для WebKitDriverStorage")
-        except Exception as e:
-            logger.warning(f"Не удалось настроить права для WebKitDriverStorage: {e}")
-
-        # Сначала проверяем, не открыт ли уже Safari
-        try:
-            process = subprocess.Popen(['ps', '-A'], stdout=subprocess.PIPE)
-            output, _ = process.communicate()
-            if b'Safari.app' in output:
-                logger.info("Safari уже запущен, отправляем команду на открытие Twitter")
-                subprocess.run(['open', '-a', 'Safari', 'https://twitter.com/login'], check=True)
-            else:
-                # Открываем Twitter в Safari для авторизации
-                logger.info("Открываем Twitter в Safari для авторизации...")
-                subprocess.Popen(['open', '-a', 'Safari', 'https://twitter.com/login'])
-        except:
-            # На всякий случай, если не сработает проверка процессов
-            subprocess.Popen(['open', '-a', 'Safari', 'https://twitter.com/login'])
-
-        logger.info("Twitter открыт в Safari для авторизации")
-
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при открытии Safari: {e}")
-        traceback.print_exc()
-        return False
-
-
-def launch_chrome_for_scraping():
-    """Открывает Twitter в Chrome для авторизации"""
-    import subprocess
-    import platform
-    import os
-    import signal
-    import time
-
-    try:
-        logger.info("Открываем Twitter в Chrome для авторизации...")
-
-        # Создаем директорию для профиля, если нужно
-        chrome_profile = os.path.join(os.path.expanduser('~'), 'ChromeDriverProfile')
-        os.makedirs(chrome_profile, exist_ok=True)
-        logger.info(f"Создана директория профиля: {chrome_profile}")
-
-        # Проверяем, не запущен ли уже Chrome с этим профилем
-        if platform.system() == "Darwin":  # macOS
-            try:
-                # Проверяем процессы Chrome
-                process = subprocess.Popen(['ps', 'aux'], stdout=subprocess.PIPE)
-                output, _ = process.communicate()
-                if chrome_profile.encode() in output:
-                    logger.info("Chrome уже запущен с этим профилем, убиваем процесс")
-                    # Находим и убиваем процессы Chrome с нашим профилем
-                    grep_proc = subprocess.Popen(['grep', 'Chrome'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-                    grep_proc.stdin.write(output)
-                    grep_proc.stdin.close()
-                    chrome_processes = grep_proc.stdout.read().decode('utf-8').strip().split('\n')
-
-                    for proc in chrome_processes:
-                        if chrome_profile in proc:
-                            parts = proc.split()
-                            if len(parts) > 1:
-                                try:
-                                    pid = int(parts[1])
-                                    os.kill(pid, signal.SIGTERM)
-                                    logger.info(f"Убит процесс Chrome с PID {pid}")
-                                except:
-                                    pass
-                    # Даем время на закрытие
-                    time.sleep(1)
-            except Exception as e:
-                logger.warning(f"Ошибка при проверке процессов Chrome: {e}")
-
-            # Открываем Chrome с профилем
-            chrome_cmd = [
-                'open',
-                '-a', 'Google Chrome',
-                '--args',
-                f'--user-data-dir={chrome_profile}',
-                '--no-first-run',
-                '--no-default-browser-check',
-                'https://twitter.com/login'
-            ]
-
-            subprocess.Popen(chrome_cmd)
-            logger.info("Chrome запущен с командой: " + " ".join(chrome_cmd))
-
-        elif platform.system() == "Windows":
-            chrome_path = os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'),
-                                       'Google\\Chrome\\Application\\chrome.exe')
-            if not os.path.exists(chrome_path):
-                chrome_path = os.path.join(os.environ.get('PROGRAMFILES(X86)', 'C:\\Program Files (x86)'),
-                                           'Google\\Chrome\\Application\\chrome.exe')
-
-            if os.path.exists(chrome_path):
-                subprocess.Popen([
-                    chrome_path,
-                    f'--user-data-dir={chrome_profile}',
-                    '--no-first-run',
-                    '--no-default-browser-check',
-                    'https://twitter.com/login'
-                ])
-            else:
-                subprocess.Popen(['start', 'chrome',
-                                  f'--user-data-dir={chrome_profile}',
-                                  'https://twitter.com/login'], shell=True)
-        else:  # Linux или другие системы
-            subprocess.Popen([
-                'google-chrome',
-                f'--user-data-dir={chrome_profile}',
-                '--no-first-run',
-                '--no-default-browser-check',
-                'https://twitter.com/login'
-            ])
-
-        logger.info("Twitter открыт в Chrome для авторизации")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при открытии Chrome: {e}")
-        traceback.print_exc()
-        return False
-
-async def check_instance(session, instance):
-    """Проверяет доступность Nitter-инстанса"""
-    try:
-        async with session.get(
-                f"{instance}/twitter",
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0"}
-        ) as response:
-            if response.status != 200:
-                return False
-
-            # Проверка содержимого страницы, чтобы убедиться, что это работающий инстанс
-            page_content = await response.text()
-            return 'twitter' in page_content.lower() and len(page_content) > 1000
-    except:
-        return False
 
 
 async def check_nitter_instance_status(instance):
@@ -1032,34 +443,18 @@ async def update_nitter_instances():
         logger.error("Невозможно обновить Nitter-инстансы: цикл событий не запущен")
         return []
 
-    working_instances = []
+    working_instances = await get_working_nitter_instances()
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for instance in NITTER_INSTANCES:
-                tasks.append(check_instance(session, instance))
+    if not working_instances:
+        logger.warning("No Nitter instances available, using the default list")
+        working_instances = NITTER_INSTANCES[:3]  # Берем хотя бы первые 3 инстанса по умолчанию
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+    settings = get_settings()
+    settings["nitter_instances"] = working_instances
+    settings["last_health_check"] = int(time.time())
+    save_json(SETTINGS_FILE, settings)
 
-            for instance, is_working in zip(NITTER_INSTANCES, results):
-                if is_working and not isinstance(is_working, Exception):
-                    working_instances.append(instance)
-                    logger.info(f"Nitter instance available: {instance}")
-
-        if not working_instances:
-            logger.warning("No Nitter instances available, using the default list")
-            working_instances = NITTER_INSTANCES[:3]  # Берем хотя бы первые 3 инстанса по умолчанию
-
-        settings = get_settings()
-        settings["nitter_instances"] = working_instances
-        settings["last_health_check"] = int(time.time())
-        save_json(SETTINGS_FILE, settings)
-
-        return working_instances
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении Nitter-инстансов: {e}")
-        return NITTER_INSTANCES[:3]  # В случае ошибки возвращаем первые 3 инстанса
+    return working_instances
 
 
 class TwitterClient:
@@ -1143,7 +538,7 @@ class TwitterClient:
 
         return None
 
-    def get_user_id(self, username, use_proxies=False):
+    def get_user_id(self, username,):
         """Получает Twitter ID пользователя по имени аккаунта"""
         logger.info(f"Запрос ID пользователя для @{username}...")
 
@@ -1164,8 +559,7 @@ class TwitterClient:
         }
 
         try:
-            proxies = get_random_proxy() if use_proxies else None
-            response = self.session.get(url, headers=headers, proxies=proxies, timeout=10)
+            response = self.session.get(url, headers=headers, timeout=10)
 
             if response.status_code == 429:
                 reset_time = int(response.headers.get("x-rate-limit-reset", time.time() + 900))
@@ -1196,7 +590,7 @@ class TwitterClient:
             logger.error(f"Ошибка при получении ID пользователя @{username}: {e}")
             return None
 
-    def get_user_tweets(self, user_id, use_proxies=False):
+    def get_user_tweets(self, user_id):
         # Проверяем нужно ли вообще делать запрос к API
         if not self.bearer_token or not self.check_rate_limit():
             return None
@@ -1219,8 +613,7 @@ class TwitterClient:
         }
 
         try:
-            proxies = get_random_proxy() if use_proxies else None
-            response = self.session.get(url, headers=headers, params=params, proxies=proxies, timeout=10)
+            response = self.session.get(url, headers=headers, params=params, timeout=10)
 
             if response.status_code == 429:
                 reset_time = int(response.headers.get("x-rate-limit-reset", time.time() + 900))
@@ -1258,13 +651,11 @@ class TwitterClient:
 
         return None
 
-    def get_latest_tweet(self, username, last_known_id=None, use_proxies=False):
+    def get_latest_tweet(self, username, last_known_id=None):
         """Получает последний твит пользователя через API Twitter"""
         logger.info(f"Запрос твитов для @{username} через API...")
 
         # Если передан последний известный ID, проверяем нужно ли запрашивать API
-        # Используем API только если другие методы нашли более новый твит, но данные о нем неполные
-        # Или если другие методы не нашли твит вообще
         if last_known_id:
             # Проверяем кеш API твитов
             cached_data = get_from_cache("tweets", f"api_{username.lower()}", 3600)  # Кеш на 1 час
@@ -1276,19 +667,18 @@ class TwitterClient:
                     return cached_data.get("user_id"), cached_id, cached_data.get("tweet_data")
 
         # Проверяем, нужно ли вообще обращаться к API
-        # (если у нас лимиты исчерпаны или ключа нет - не запрашиваем)
         if not self.bearer_token or not self.check_rate_limit():
             logger.info("API недоступен из-за лимитов или отсутствия ключа")
             return None, None, None
 
         # Получаем ID пользователя
-        user_id = self.get_user_id(username, use_proxies)
+        user_id = self.get_user_id(username)
         if not user_id:
             logger.warning(f"Не удалось получить ID пользователя @{username}")
             return None, None, None
 
         # Получаем твиты пользователя
-        tweets = self.get_user_tweets(user_id, use_proxies)
+        tweets = self.get_user_tweets(user_id)
         if not tweets:
             logger.warning(f"Не удалось получить твиты для @{username}")
             return user_id, None, None
@@ -1424,7 +814,7 @@ class NitterScraper:
             return False
         return True
 
-    def get_latest_tweet_nitter(self, username, last_known_id=None, use_proxies=False):
+    def get_latest_tweet_nitter(self, username, last_known_id=None):
         """Получает последний твит через Nitter с проверкой инстансов"""
         logger.info(f"Запрос твитов для @{username} через Nitter...")
 
@@ -1460,8 +850,7 @@ class NitterScraper:
 
                     logger.info(f"Попытка получения твитов через {nitter}...")
 
-                    proxies = get_random_proxy() if use_proxies else None
-                    nitter_response = self.session.get(full_url, headers=headers, proxies=proxies, timeout=15)
+                    nitter_response = self.session.get(full_url, headers=headers, timeout=15)
 
                     if nitter_response.status_code != 200:
                         logger.warning(f"Nitter {nitter} вернул код {nitter_response.status_code}")
@@ -1659,9 +1048,6 @@ class WebScraper:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:96.0) Gecko/20100101 Firefox/96.0"
         ]
-        # Для ротации используем только Safari и Chrome (без разделения на safari/chrome)
-        self.browser_rotation = ["safari", "chrome"]
-        self.current_browser_index = 0
 
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
@@ -1674,209 +1060,160 @@ class WebScraper:
             return False
         return True
 
-    def _get_next_browser_config(self):
-        """Возвращает следующий браузер в ротации"""
-        browser = self.browser_rotation[self.current_browser_index]
-        self.current_browser_index = (self.current_browser_index + 1) % len(self.browser_rotation)
-
-        if browser == "safari":
-            return True, False  # Safari, не инкогнито
-        else:  # chrome
-            return False, False  # Chrome, не инкогнито
-
-    def get_latest_tweet_web(self, username, last_known_id=None, use_proxies=False, max_retries=2, browser_override=None):
-        """Улучшенный веб-скрапинг Twitter с использованием разных браузеров при неудачах"""
+    def get_latest_tweet_web(self, username, last_known_id=None):
+        """Простой веб-скрапинг Twitter без авторизации"""
         logger.info(f"Запрос твитов для @{username} через веб-скрапинг...")
 
         # Проверяем, нужно ли делать запрос через веб, если есть последний известный ID
-        # Если у нас есть данные в кеше и это не первая проверка, то проверяем кеш
         if last_known_id:
             cached_data = get_from_cache("tweets", f"web_{username.lower()}", 3600)
             if cached_data and cached_data.get("tweet_id") == last_known_id:
                 logger.info(f"Найден твит {last_known_id} в кеше для @{username}, пропускаем веб-скрапинг")
                 return last_known_id, cached_data.get("tweet_data")
 
-        retry_count = 0
-        while retry_count < max_retries:
-            # Выбираем браузер для этой попытки
-            if browser_override:
-                # Используем явно указанный браузер
-                if browser_override == "safari":
-                    use_safari, incognito = True, False
-                elif browser_override == "chrome":
-                    use_safari, incognito = False, False
-                else:
-                    # Если указан неизвестный браузер, используем следующий по ротации
-                    use_safari, incognito = self._get_next_browser_config()
-            else:
-                # Используем следующий браузер в ротации
-                use_safari, incognito = self._get_next_browser_config()
+        try:
+            with HTMLSession() as session:
+                # URL для страницы со свежими твитами
+                url = f"https://twitter.com/{username}?s=20"
 
-            browser_name = "Safari" if use_safari else "Chrome"
-            logger.info(f"Попытка {retry_count + 1}/{max_retries} через {browser_name}")
+                logger.info(f"Загрузка страницы {url} через веб-скрапинг")
+                session.get(url)
 
-            try:
-                with HTMLSession(use_safari=use_safari, incognito=incognito) as session:
-                    # URL для страницы со свежими твитами
-                    url = f"https://twitter.com/{username}?s=20"
+                # Собираем данные о твитах с помощью JavaScript
+                tweets_data = session.driver.execute_script(r"""
+                    function extractTweets() {
+                        const tweets = [];
+                        try {
+                            const tweetElements = document.querySelectorAll('article[data-testid="tweet"]');
+                            console.log(`Найдено ${tweetElements.length} твитов на странице`);
 
-                    logger.info(f"Загрузка страницы {url} через {browser_name}")
-                    session.get(url)
+                            for (const article of tweetElements) {
+                                try {
+                                    const socialContext = article.querySelector('[data-testid="socialContext"]');
+                                    const isPinned = socialContext && 
+                                        (socialContext.textContent.includes('Pinned') || 
+                                         socialContext.textContent.includes('Закрепленный') ||
+                                         socialContext.textContent.includes('закреплен'));
 
-                    # Дополнительные действия для имитации человека
-                    # Прокрутка страницы для загрузки контента
-                    session.driver.execute_script("window.scrollTo(0, 400)")
-                    time.sleep(random.uniform(0.7, 1.3))
-
-                    # Случайный скроллинг
-                    session.driver.execute_script(f"window.scrollBy(0, {random.randint(200, 400)});")
-                    time.sleep(random.uniform(0.5, 1))
-
-                    # Собираем данные о твитах с помощью JavaScript
-                    tweets_data = session.driver.execute_script(r"""
-                        function extractTweets() {
-                            const tweets = [];
-                            try {
-                                const tweetElements = document.querySelectorAll('article[data-testid="tweet"]');
-                                console.log(`Найдено ${tweetElements.length} твитов на странице`);
-
-                                for (const article of tweetElements) {
-                                    try {
-                                        const socialContext = article.querySelector('[data-testid="socialContext"]');
-                                        const isPinned = socialContext && 
-                                            (socialContext.textContent.includes('Pinned') || 
-                                             socialContext.textContent.includes('Закрепленный') ||
-                                             socialContext.textContent.includes('закреплен'));
-
-                                        let tweetId = null;
-                                        const links = article.querySelectorAll('a[href*="/status/"]');
-                                        for (const link of links) {
-                                            const match = link.href.match(/\/status\/(\d+)/);
-                                            if (match && match[1]) {
-                                                tweetId = match[1];
-                                                break;
-                                            }
+                                    let tweetId = null;
+                                    const links = article.querySelectorAll('a[href*="/status/"]');
+                                    for (const link of links) {
+                                        const match = link.href.match(/\/status\/(\d+)/);
+                                        if (match && match[1]) {
+                                            tweetId = match[1];
+                                            break;
                                         }
-
-                                        if (!tweetId) continue;
-
-                                        const textElement = article.querySelector('[data-testid="tweetText"]');
-                                        const tweetText = textElement ? textElement.innerText : '';
-
-                                        let timestamp = '';
-                                        let displayDate = '';
-                                        const timeElement = article.querySelector('time');
-                                        if (timeElement) {
-                                            timestamp = timeElement.getAttribute('datetime');
-                                            displayDate = timeElement.innerText;
-                                        }
-
-                                        const photoElements = article.querySelectorAll('[data-testid="tweetPhoto"]');
-                                        const mediaUrls = [];
-
-                                        for (const photoEl of photoElements) {
-                                            const img = photoEl.querySelector('img');
-                                            if (img && img.src) {
-                                                let imgUrl = img.src;
-                                                imgUrl = imgUrl.replace('&name=small', '&name=large');
-                                                imgUrl = imgUrl.replace('&name=thumb', '&name=large');
-                                                mediaUrls.push({
-                                                    type: 'photo',
-                                                    url: imgUrl
-                                                });
-                                            }
-                                        }
-
-                                        tweets.push({
-                                            id: tweetId,
-                                            text: tweetText,
-                                            timestamp: timestamp,
-                                            displayDate: displayDate,
-                                            isPinned: isPinned,
-                                            hasMedia: photoElements.length > 0,
-                                            media: mediaUrls
-                                        });
-                                    } catch(e) {
-                                        console.error("Ошибка обработки твита:", e);
                                     }
+
+                                    if (!tweetId) continue;
+
+                                    const textElement = article.querySelector('[data-testid="tweetText"]');
+                                    const tweetText = textElement ? textElement.innerText : '';
+
+                                    let timestamp = '';
+                                    let displayDate = '';
+                                    const timeElement = article.querySelector('time');
+                                    if (timeElement) {
+                                        timestamp = timeElement.getAttribute('datetime');
+                                        displayDate = timeElement.innerText;
+                                    }
+
+                                    const photoElements = article.querySelectorAll('[data-testid="tweetPhoto"]');
+                                    const mediaUrls = [];
+
+                                    for (const photoEl of photoElements) {
+                                        const img = photoEl.querySelector('img');
+                                        if (img && img.src) {
+                                            let imgUrl = img.src;
+                                            imgUrl = imgUrl.replace('&name=small', '&name=large');
+                                            imgUrl = imgUrl.replace('&name=thumb', '&name=large');
+                                            mediaUrls.push({
+                                                type: 'photo',
+                                                url: imgUrl
+                                            });
+                                        }
+                                    }
+
+                                    tweets.push({
+                                        id: tweetId,
+                                        text: tweetText,
+                                        timestamp: timestamp,
+                                        displayDate: displayDate,
+                                        isPinned: isPinned,
+                                        hasMedia: photoElements.length > 0,
+                                        media: mediaUrls
+                                    });
+                                } catch(e) {
+                                    console.error("Ошибка обработки твита:", e);
                                 }
-                            } catch(e) {
-                                console.error("Ошибка сбора твитов:", e);
                             }
-
-                            return tweets;
+                        } catch(e) {
+                            console.error("Ошибка сбора твитов:", e);
                         }
-                        return extractTweets();
-                    """)
 
-                    logger.info(f"Извлечено {len(tweets_data) if tweets_data else 0} твитов для @{username}")
+                        return tweets;
+                    }
+                    return extractTweets();
+                """)
 
-                    if tweets_data and len(tweets_data) > 0:
-                        # Отфильтровываем закрепленные твиты если ищем обновления
+                logger.info(f"Извлечено {len(tweets_data) if tweets_data else 0} твитов для @{username}")
+
+                if tweets_data and len(tweets_data) > 0:
+                    # Отфильтровываем закрепленные твиты если ищем обновления
+                    if last_known_id:
+                        regular_tweets = [t for t in tweets_data if not t.get('isPinned')]
+                        target_tweets = regular_tweets or tweets_data
+                    else:
+                        target_tweets = tweets_data
+
+                    # Сортируем по ID (самые новые в начале)
+                    try:
+                        target_tweets.sort(key=lambda x: int(x.get('id', '0')), reverse=True)
+                    except:
+                        pass
+
+                    if target_tweets:
+                        selected_tweet = target_tweets[0]
+                        tweet_id = selected_tweet.get('id')
+
+                        # Проверяем, новее ли найденный твит последнего известного
                         if last_known_id:
-                            regular_tweets = [t for t in tweets_data if not t.get('isPinned')]
-                            target_tweets = regular_tweets or tweets_data
-                        else:
-                            target_tweets = tweets_data
+                            try:
+                                is_newer = int(tweet_id) > int(last_known_id)
+                                if not is_newer:
+                                    # Если не нашли более новый твит, возвращаем известный
+                                    logger.warning(
+                                        f"Web не нашел новый твит для @{username} (текущий: {last_known_id})")
+                                    return last_known_id, cached_data.get("tweet_data") if cached_data else None
+                            except (ValueError, TypeError):
+                                pass
 
-                        # Сортируем по ID (самые новые в начале)
-                        try:
-                            target_tweets.sort(key=lambda x: int(x.get('id', '0')), reverse=True)
-                        except:
-                            pass
+                        if not self.validate_tweet_id(username, tweet_id):
+                            logger.warning(f"Некорректный ID твита: {tweet_id}")
+                            return None, None
 
-                        if target_tweets:
-                            selected_tweet = target_tweets[0]
-                            tweet_id = selected_tweet.get('id')
+                        # Формируем данные о твите
+                        tweet_data = {
+                            "text": selected_tweet.get('text', '[Текст недоступен]'),
+                            "url": f"https://twitter.com/{username}/status/{tweet_id}",
+                            "created_at": selected_tweet.get('timestamp', ''),
+                            "formatted_date": selected_tweet.get('displayDate', 'неизвестная дата'),
+                            "is_pinned": selected_tweet.get('isPinned', False),
+                            "has_media": selected_tweet.get('hasMedia', False),
+                            "media": selected_tweet.get('media', [])
+                        }
 
-                            # Проверяем, новее ли найденный твит последнего известного
-                            if last_known_id:
-                                try:
-                                    is_newer = int(tweet_id) > int(last_known_id)
-                                    if not is_newer:
-                                        # Если не нашли более новый твит, сразу возвращаем результат
-                                        # ИЗМЕНЕНИЕ: Не продолжаем проверку следующими браузерами, если нашли твит
-                                        logger.warning(
-                                            f"Web через {browser_name} не нашел новый твит для @{username} (текущий: {last_known_id})")
-                                        return last_known_id, cached_data.get("tweet_data") if cached_data else None
-                                except (ValueError, TypeError):
-                                    pass
+                        # Обновляем кеш
+                        update_cache("tweets", f"web_{username.lower()}", {
+                            "tweet_id": tweet_id,
+                            "tweet_data": tweet_data
+                        })
 
-                            if not self.validate_tweet_id(username, tweet_id):
-                                logger.warning(f"Некорректный ID твита: {tweet_id}")
-                                retry_count += 1
-                                continue
+                        logger.info(f"Найден твит ID {tweet_id} для @{username} через веб-скрапинг")
+                        return tweet_id, tweet_data
 
-                            # Формируем данные о твите
-                            tweet_data = {
-                                "text": selected_tweet.get('text', '[Текст недоступен]'),
-                                "url": f"https://twitter.com/{username}/status/{tweet_id}",
-                                "created_at": selected_tweet.get('timestamp', ''),
-                                "formatted_date": selected_tweet.get('displayDate', 'неизвестная дата'),
-                                "is_pinned": selected_tweet.get('isPinned', False),
-                                "has_media": selected_tweet.get('hasMedia', False),
-                                "media": selected_tweet.get('media', []),
-                                "browser_used": browser_name
-                            }
-
-                            # Обновляем кеш
-                            update_cache("tweets", f"web_{username.lower()}", {
-                                "tweet_id": tweet_id,
-                                "tweet_data": tweet_data
-                            })
-
-                            logger.info(f"Найден твит ID {tweet_id} для @{username} через {browser_name}")
-                            return tweet_id, tweet_data
-
-                    # Если не нашли твиты, переходим к следующему браузеру
-                    retry_count += 1
-
-            except Exception as e:
-                retry_count += 1
-                logger.error(f"Ошибка при получении твитов для @{username} через {browser_name}: {e}")
-                if retry_count < max_retries:
-                    logger.info(f"Повторная попытка {retry_count}/{max_retries} для @{username}")
-                time.sleep(random.uniform(1.5, 3))  # Случайная пауза перед повторной попыткой
+        except Exception as e:
+            logger.error(f"Ошибка при получении твитов для @{username} через веб-скрапинг: {e}")
 
         return None, None
 
@@ -1889,12 +1226,9 @@ async def send_tweet_with_media(app, subs, username, tweet_id, tweet_data):
 
     likes = tweet_data.get('likes', 0)
     retweets = tweet_data.get('retweets', 0)
-    browser_used = tweet_data.get('browser_used', '')
 
     # Формируем метрики
     metrics_text = f"👍 {likes} · 🔄 {retweets}" if likes or retweets else ""
-    if browser_used:
-        metrics_text += f" · 🌐 {browser_used}" if metrics_text else f"🌐 {browser_used}"
 
     # Основное сообщение
     tweet_msg = f"🐦 @{username}"
@@ -1982,23 +1316,23 @@ async def send_tweet_with_media(app, subs, username, tweet_id, tweet_data):
                 pass
 
 
-async def check_tweet_multi_method(username, account_methods=None, use_proxies=False, max_retries=2):
-    """Проверяет твиты всеми доступными методами с учетом индивидуальных настроек аккаунта и порядком приоритета"""
-    # Получаем настройки методов
+async def check_tweet_multi_method(username, account_methods=None):
+    """Проверяет твиты с запасным использованием API только при находжении числом меньшего ID"""
     settings = get_settings()
     accounts = init_accounts()
     account = accounts.get(username.lower(), {})
     last_known_id = account.get('last_tweet_id')
 
-    # Определяем какие методы использовать
+    # Определяем методы для использования (без API изначально)
     if account_methods:
-        methods = account_methods
+        methods = [m for m in account_methods if m != "api"]
     elif account.get("scraper_methods"):
-        methods = account["scraper_methods"]
+        methods = [m for m in account.get("scraper_methods") if m != "api"]
         logger.info(f"Используем индивидуальные методы для @{username}: {methods}")
     else:
-        methods = settings.get("scraper_methods", ["nitter", "web", "api"])
-        logger.info(f"Используем общие методы скрапинга: {methods}")
+        default_methods = settings.get("scraper_methods", ["nitter", "web", "api"])
+        methods = [m for m in default_methods if m != "api"]
+        logger.info(f"Используем основные методы скрапинга: {methods}")
 
     twitter_client = TwitterClient(TWITTER_BEARER)
     nitter_scraper = NitterScraper()
@@ -2010,51 +1344,114 @@ async def check_tweet_multi_method(username, account_methods=None, use_proxies=F
         "web": {"tweet_id": None, "tweet_data": None}
     }
 
-    found_new_id = False  # Флаг, определяющий нашли ли мы новый ID
+    found_newer_tweet = False  # Флаг для более нового твита
+    found_numerically_smaller_id = False  # Новый флаг для проверки числом меньшего ID
+    max_found_id = None  # Для хранения максимального найденного ID
 
-    # Проверяем методы в указанном порядке
+    # Проверяем сначала основные методы (без API)
     for method in methods:
         try:
-            # Если мы уже нашли новый твит, прерываем дальнейший поиск
-            if found_new_id:
-                logger.info(f"Уже нашли новый твит методом {next(k for k, v in results.items() if v.get('tweet_id'))}, пропускаем остальные методы")
+            # Если уже нашли более новый твит, останавливаемся
+            if found_newer_tweet:
+                logger.info(f"Уже нашли новый твит, пропускаем {method}")
                 break
 
             if method == "nitter":
-                tweet_id, tweet_data = nitter_scraper.get_latest_tweet_nitter(username, last_known_id, use_proxies)
+                tweet_id, tweet_data = nitter_scraper.get_latest_tweet_nitter(username, None)
                 if tweet_id:
                     results["nitter"]["tweet_id"] = tweet_id
                     results["nitter"]["tweet_data"] = tweet_data
                     logger.info(f"Nitter нашел твит: {tweet_id}")
-                    if last_known_id and int(tweet_id) > int(last_known_id):
-                        found_new_id = True
 
-            elif method == "api" and TWITTER_BEARER and not twitter_client.rate_limited:
-                user_id, tweet_id, tweet_data = twitter_client.get_latest_tweet(username, last_known_id, use_proxies)
-                if user_id:
-                    results["api"]["user_id"] = user_id
-                if tweet_id:
-                    results["api"]["tweet_id"] = tweet_id
-                    results["api"]["tweet_data"] = tweet_data
-                    logger.info(f"API нашел твит: {tweet_id}")
-                    if last_known_id and int(tweet_id) > int(last_known_id):
-                        found_new_id = True
+                    # Обновляем максимальный найденный ID
+                    try:
+                        if max_found_id is None or int(tweet_id) > int(max_found_id):
+                            max_found_id = tweet_id
+                    except (ValueError, TypeError):
+                        pass
+
+                    # Проверяем, новее ли найденный твит текущего
+                    if last_known_id:
+                        try:
+                            if int(tweet_id) > int(last_known_id):
+                                found_newer_tweet = True
+                                logger.info("Найден более новый твит через Nitter")
+                            elif int(tweet_id) < int(last_known_id):
+                                # Твит действительно старее ЧИСЛОМ
+                                logger.info("Nitter нашел твит с ID ЧИСЛОМ МЕНЬШЕ текущего")
+                                found_numerically_smaller_id = True
+                            else:
+                                # Тот же самый твит
+                                logger.info("Nitter нашел тот же самый твит, что в кеше")
+                        except (ValueError, TypeError):
+                            pass
+                    else:
+                        found_newer_tweet = True
 
             elif method == "web":
-                # Используем только обычный веб-скрапинг без разделения на Chrome/Safari
-                tweet_id, tweet_data = web_scraper.get_latest_tweet_web(username, last_known_id, use_proxies, max_retries)
+                tweet_id, tweet_data = web_scraper.get_latest_tweet_web(username, None)
                 if tweet_id:
                     results["web"]["tweet_id"] = tweet_id
                     results["web"]["tweet_data"] = tweet_data
                     logger.info(f"Web нашел твит: {tweet_id}")
-                    if last_known_id and int(tweet_id) > int(last_known_id):
-                        found_new_id = True
+
+                    # Обновляем максимальный найденный ID
+                    try:
+                        if max_found_id is None or int(tweet_id) > int(max_found_id):
+                            max_found_id = tweet_id
+                    except (ValueError, TypeError):
+                        pass
+
+                    # Проверяем, новее ли найденный твит текущего
+                    if last_known_id:
+                        try:
+                            if int(tweet_id) > int(last_known_id):
+                                found_newer_tweet = True
+                                logger.info("Найден более новый твит через Web")
+                            elif int(tweet_id) < int(last_known_id):
+                                # Твит действительно старее ЧИСЛОМ
+                                logger.info("Web нашел твит с ID ЧИСЛОМ МЕНЬШЕ текущего")
+                                found_numerically_smaller_id = True
+                            else:
+                                # Тот же самый твит
+                                logger.info("Web нашел тот же самый твит, что в кеше")
+                        except (ValueError, TypeError):
+                            pass
+                    else:
+                        found_newer_tweet = True
 
         except Exception as e:
             logger.error(f"Ошибка при проверке {username} методом {method}: {e}")
             traceback.print_exc()
 
-    # Собираем все найденные ID твитов
+    # ИСПОЛЬЗУЕМ API ТОЛЬКО ЕСЛИ:
+    # 1. Найден твит с ID ЧИСЛОМ МЕНЬШЕ текущего в кеше
+    # 2. И нет найденных твитов с ID БОЛЬШЕ текущего
+    # 3. И есть валидный токен и нет ограничений API
+    use_api = (found_numerically_smaller_id and not found_newer_tweet and
+               TWITTER_BEARER and not twitter_client.rate_limited)
+
+    if use_api:
+        logger.info(f"Найден твит с ID ЧИСЛОМ МЕНЬШЕ текущего, запускаем API как запасной метод")
+        try:
+            user_id, tweet_id, tweet_data = twitter_client.get_latest_tweet(username, None)
+            if user_id:
+                results["api"]["user_id"] = user_id
+            if tweet_id:
+                results["api"]["tweet_id"] = tweet_id
+                results["api"]["tweet_data"] = tweet_data
+                logger.info(f"API нашел твит: {tweet_id}")
+
+                if last_known_id:
+                    try:
+                        if int(tweet_id) > int(last_known_id):
+                            logger.info("API нашел новый твит")
+                    except:
+                        pass
+        except Exception as e:
+            logger.error(f"Ошибка при использовании API как запасного метода: {e}")
+
+    # Сбор и выбор результатов
     tweet_ids = {}
     for method, data in results.items():
         if data["tweet_id"]:
@@ -2071,7 +1468,6 @@ async def check_tweet_multi_method(username, account_methods=None, use_proxies=F
         newest_method, newest_id = max(tweet_ids.items(), key=lambda x: int(x[1]))
         logger.info(f"Выбран самый новый твит: {newest_id} (метод: {newest_method})")
     except (ValueError, TypeError):
-        # При ошибке берем первый найденный
         newest_method = next(iter(tweet_ids))
         newest_id = tweet_ids[newest_method]
         logger.warning(f"Не удалось сравнить ID твитов, выбран первый: {newest_id}")
@@ -2090,7 +1486,7 @@ async def check_tweet_multi_method(username, account_methods=None, use_proxies=F
 
     return user_id, newest_id, tweet_data, newest_method
 
-async def process_account(app, subs, accounts, username, account, methods, use_proxies):
+async def process_account(app, subs, accounts, username, account, methods):
     """Обрабатывает один аккаунт и отправляет уведомления при новых твитах"""
     try:
         # Обновляем время проверки
@@ -2109,7 +1505,7 @@ async def process_account(app, subs, accounts, username, account, methods, use_p
 
         # Используем мультиметодную проверку с учетом приватности
         user_id, tweet_id, tweet_data, method = await check_tweet_multi_method(
-            username, methods, use_proxies
+            username, methods,
         )
 
         # Обновляем ID пользователя, если получили новый
@@ -2211,26 +1607,16 @@ async def on_startup(app):
         BotCommand("settings", "Настройки бота"),
         BotCommand("methods", "Настройка методов скрапинга"),
         BotCommand("update_nitter", "Обновить Nitter-инстансы"),
-        BotCommand("auth", "Запустить Safari для авторизации"),
-        BotCommand("auth_chrome", "Запустить Chrome для авторизации"),
-        BotCommand("stats", "Статистика веб-скрапинга"),
+        BotCommand("stats", "Статистика скрапинга"),
         BotCommand("reset", "Сброс данных аккаунта"),
     ])
 
     # Инициализируем данные
     init_accounts()
 
-    # Создаем файл прокси, если не существует
-    if not os.path.exists(PROXIES_FILE):
-        save_json(PROXIES_FILE, {"proxies": []})
-
     # Создаем файл кеша, если не существует
     if not os.path.exists(CACHE_FILE):
         save_json(CACHE_FILE, {"tweets": {}, "users": {}, "timestamp": int(time.time())})
-
-    # Создаем файл статистики браузеров, если не существует
-    if not os.path.exists(BROWSER_STATS_FILE):
-        save_json(BROWSER_STATS_FILE, {"browsers": {}, "last_update": int(time.time())})
 
     # Обновляем список Nitter-инстансов
     try:
@@ -2299,7 +1685,6 @@ async def background_check(app):
                 continue
 
             # Получаем настройки
-            use_proxies = settings.get("use_proxies", False)
             methods = settings.get("scraper_methods", ["nitter", "web", "api"])
             parallel_checks = settings.get("parallel_checks", 3)
             randomize = settings.get("randomize_intervals", True)
@@ -2372,7 +1757,7 @@ async def background_check(app):
                     display_name = account.get('username', username)
                     account_methods = account.get('scraper_methods', methods)
                     tasks.append(
-                        process_account(app, subs, accounts, display_name, account, account_methods, use_proxies))
+                        process_account(app, subs, accounts, display_name, account, account_methods))
 
                 # Запускаем все задачи параллельно
                 if tasks:
@@ -2438,10 +1823,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/settings - настройки\n"
         "/methods <username> <method1,method2> - приоритет проверок\n"
         "/reset <username> - сброс данных аккаунта\n"
-        "/stats - статистика браузеров\n"
-        "/update_nitter - обновляет список Nitter-инстансы\n"
-        "/auth - запустить Safari для авторизации\n"
-        "/auth_chrome - запустить Chrome для авторизации\n\n"
+        "/stats - статистика скрапинга\n"
+        "/update_nitter - обновляет список Nitter-инстансы\n\n"
         "Бот автоматически проверяет новые твиты и отправляет уведомления.",
         reply_markup=keyboard
     )
@@ -2462,11 +1845,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = await update.message.reply_text(f"Проверяем @{username}...")
 
     settings = get_settings()
-    use_proxies = settings.get("use_proxies", False)
     methods = settings.get("scraper_methods", ["nitter", "web", "api"])
 
     user_id, tweet_id, tweet_data, method = await check_tweet_multi_method(
-        username, methods, use_proxies
+        username, methods,
     )
 
     if not tweet_id:
@@ -2588,7 +1970,8 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Добавляем информацию о методах скрапинга
         scraper_methods = data.get("scraper_methods")
-        methods_info = f"общие ({', '.join(settings.get('scraper_methods', ['nitter', 'web', 'api']))})" if scraper_methods is None else ', '.join(scraper_methods)
+        methods_info = f"общие ({', '.join(settings.get('scraper_methods', ['nitter', 'web', 'api']))})" if scraper_methods is None else ', '.join(
+            scraper_methods)
 
         # Если методы полностью отключены
         if scraper_methods == []:
@@ -2667,7 +2050,6 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tweet_url = tweet_data.get('url', account.get('last_tweet_url',
                                                           f"https://twitter.com/{display_name}/status/{last_id}"))
             formatted_date = tweet_data.get('formatted_date', '')
-            browser_used = tweet_data.get('browser_used', '')
 
             tweet_info = f"📱 @{display_name}"
 
@@ -2685,11 +2067,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 tweet_info += f"\n👍 {likes} · 🔄 {retweets}"
 
             # Добавляем метод и время проверки
-            method_info = method
-            if browser_used:
-                method_info += f" · {browser_used}"
-
-            tweet_info += f"\n🔍 Метод: {method_info}, проверка: {last_check}"
+            tweet_info += f"\n🔍 Метод: {method}, проверка: {last_check}"
 
             # Добавляем URL в конце
             tweet_info += f"\n🔗 {tweet_url}"
@@ -2717,18 +2095,14 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     interval_mins = settings.get("check_interval", DEFAULT_CHECK_INTERVAL) // 60
     enabled = settings.get("enabled", True)
-    use_proxies = settings.get("use_proxies", False)
     methods = settings.get("scraper_methods", ["nitter", "web", "api"])
     parallel_checks = settings.get("parallel_checks", 3)
     api_request_limit = settings.get("api_request_limit", 20)
     randomize = settings.get("randomize_intervals", True)
 
     enabled_status = "✅ включен" if enabled else "❌ выключен"
-    proxies_status = "✅ включено" if use_proxies else "❌ выключено"
     randomize_status = "✅ включено" if randomize else "❌ выключено"
 
-    proxies = get_proxies()
-    proxy_count = len(proxies.get("proxies", []))
 
     nitter_instances = settings.get("nitter_instances", NITTER_INSTANCES)
     nitter_count = len(nitter_instances)
@@ -2740,7 +2114,6 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Случайные интервалы: {randomize_status}\n"
         f"• Одновременные проверки: {parallel_checks}\n"
         f"• Лимит API запросов: {api_request_limit}\n"
-        f"• Использование прокси: {proxies_status} (доступно: {proxy_count})\n"
         f"• Nitter-инстансы: {nitter_count}\n\n"
         f"• Приоритет методов: {', '.join(methods)}\n\n"
     )
@@ -2749,7 +2122,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard.append([
         InlineKeyboardButton("🔄 Вкл/выкл мониторинг", callback_data="toggle_monitoring"),
-        InlineKeyboardButton("🔌 Вкл/выкл прокси", callback_data="toggle_proxies")
+        InlineKeyboardButton("📊 Статистика", callback_data="cmd_stats")  # Новая кнопка статс
     ])
 
     keyboard.append([
@@ -2849,129 +2222,72 @@ async def cmd_methods(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Порядок определяет приоритет использования."
     )
 
-async def cmd_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает Safari для авторизации в Twitter"""
-    message = update.effective_message
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        await message.reply_text("⛔️ У вас нет доступа к этой команде.")
-        return
-
-    await message.reply_text(
-        "🔄 Подготовка Safari для авторизации в Twitter...\n\n"
-        "⚠️ ВАЖНО: Для работы WebDriver в Safari:\n\n"
-        "1. Откройте Terminal и введите команду:\n"
-        "   `sudo safaridriver --enable`\n\n"
-        "2. Введите пароль администратора\n"
-        "3. В Safari включите меню Разработка:\n"
-        "   Safari → Настройки → Дополнения → ✓ Показывать меню «Разработка»\n\n"
-        "4. В меню «Разработка» включите «Разрешить удаленную автоматизацию»\n\n"
-        "После этих действий нажмите кнопку для открытия Twitter"
-    )
-
-    # Создаем кнопку для продолжения после настройки
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Открыть Twitter в Safari", callback_data="open_safari")
-    ]])
-
-    await message.reply_text("Нажмите кнопку после выполнения настройки:", reply_markup=keyboard)
-
-
-async def cmd_auth_chrome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает Chrome для авторизации в Twitter"""
-    message = update.effective_message
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        await message.reply_text("⛔️ У вас нет доступа к этой команде.")
-        return
-
-    await message.reply_text(
-        "🔄 Подготовка Chrome для авторизации в Twitter...\n\n"
-        "1. Открывается Chrome с новым профилем\n"
-        "2. Войдите в свой аккаунт Twitter\n"
-        "3. После авторизации НЕ закрывайте браузер\n"
-        "4. Вернитесь в бот и нажмите кнопку 'Проверить авторизацию'"
-    )
-
-    # Очистим директорию профиля если были проблемы
-    try:
-        chrome_profile = os.path.join(os.path.expanduser('~'), 'ChromeDriverProfile')
-        if os.path.exists(chrome_profile):
-            import shutil
-            shutil.rmtree(chrome_profile)
-            os.makedirs(chrome_profile)
-            logger.info(f"Профиль Chrome очищен и пересоздан: {chrome_profile}")
-    except Exception as e:
-        logger.warning(f"Не удалось очистить профиль Chrome: {e}")
-
-    # Пытаемся запустить Chrome с чистым профилем
-    success = launch_chrome_for_scraping()
-
-    if success:
-        # Создаем кнопку для проверки авторизации
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Проверить авторизацию", callback_data="check_chrome_auth")
-        ]])
-
-        await message.reply_text(
-            "✅ Chrome запущен с Twitter.\n"
-            "Войдите в аккаунт и нажмите кнопку ниже для проверки авторизации.",
-            reply_markup=keyboard
-        )
-    else:
-        await message.reply_text(
-            "❌ Не удалось запустить Chrome.\n"
-            "Возможные причины:\n"
-            "1. Chrome не установлен\n"
-            "2. Проблемы с правами доступа\n"
-            "3. Конфликт с уже запущенным Chrome\n\n"
-            "Попробуйте закрыть все окна Chrome и повторить попытку."
-        )
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статистику веб-скрапинга"""
-    if not os.path.exists(BROWSER_STATS_FILE):
-        return await update.message.reply_text("Статистика браузеров еще не собрана.")
+    """Показывает статистику скрапинга"""
+    # Определяем, вызвана ли функция из кнопки или напрямую
+    query = update.callback_query if hasattr(update, 'callback_query') else None
 
-    try:
-        with open(BROWSER_STATS_FILE, 'r') as f:
-            stats = json.load(f)
+    # Формируем сообщение статистики
+    stats_message = "📊 **Статистика скрапинга**\n\n"
 
-        msg = "📊 **Статистика браузеров**\n\n"
+    # Общая статистика из кеша
+    cache = get_cache()
+    tweets_cache = cache.get("tweets", {})
+    users_cache = cache.get("users", {})
 
-        for browser, data in stats["browsers"].items():
-            total = data.get("total_attempts", 0)
-            successful = data.get("successful_attempts", 0)
-            success_rate = (successful / total * 100) if total > 0 else 0
-            captchas = data.get("captchas", 0)
-            errors = data.get("errors", 0)
+    tweets_count = len(tweets_cache)
+    users_count = len(users_cache)
 
-            # Форматируем время последнего успеха
-            last_success = data.get("last_success")
-            if last_success:
-                last_success_str = datetime.fromtimestamp(last_success).strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                last_success_str = "нет данных"
+    stats_message += f"• Кешированные твиты: {tweets_count}\n"
+    stats_message += f"• Кешированные пользователи: {users_count}\n"
 
-            msg += f"**{browser}**\n"
-            msg += f"- Всего попыток: {total}\n"
-            msg += f"- Успешных: {successful} ({success_rate:.1f}%)\n"
-            msg += f"- Капчи: {captchas}\n"
-            msg += f"- Ошибки: {errors}\n"
-            msg += f"- Последний успех: {last_success_str}\n\n"
+    # Статистика по методам
+    accounts = init_accounts()
+    methods_stats = {"nitter": 0, "web": 0, "api": 0, "unknown": 0}
 
-        last_update = stats.get("last_update", 0)
-        last_update_str = datetime.fromtimestamp(last_update).strftime("%Y-%m-%d %H:%M:%S")
-        msg += f"Последнее обновление: {last_update_str}"
+    for username, account in accounts.items():
+        method = account.get("check_method")
+        if method in methods_stats:
+            methods_stats[method] += 1
+        else:
+            methods_stats["unknown"] += 1
 
-        await update.message.reply_text(msg, parse_mode="Markdown")
+    stats_message += "\n**Использование методов:**\n"
+    for method, count in methods_stats.items():
+        if count > 0:
+            stats_message += f"• {method}: {count} аккаунтов\n"
 
-    except Exception as e:
-        logger.error(f"Ошибка при получении статистики браузеров: {e}")
-        await update.message.reply_text(f"Ошибка при получении статистики: {str(e)}")
+    # API статистика
+    if TWITTER_BEARER:
+        api_limits = load_json(API_LIMITS_FILE, {}).get("twitter_api", {})
+        rate_limited = api_limits.get("rate_limited", False)
+        if rate_limited:
+            reset_time = api_limits.get("reset_time", 0)
+            reset_dt = datetime.fromtimestamp(reset_time)
+            reset_str = reset_dt.strftime("%Y-%m-%d %H:%M:%S")
+            stats_message += f"\n**API Twitter:**\n• Статус: ограничен\n• Сброс лимита: {reset_str}\n"
+        else:
+            stats_message += f"\n**API Twitter:**\n• Статус: активен\n"
+    else:
+        stats_message += f"\n**API Twitter:**\n• Статус: не настроен\n"
 
+    # Последнее обновление
+    last_update = cache.get("timestamp", int(time.time()))
+    last_update_str = datetime.fromtimestamp(last_update).strftime("%Y-%m-%d %H:%M:%S")
+
+    stats_message += f"\nПоследнее обновление кеша: {last_update_str}"
+
+    # Отправляем ответ в зависимости от способа вызова
+    if query:
+        # Если вызвано через кнопку, добавляем кнопку возврата
+        keyboard = [[InlineKeyboardButton("🔙 Назад к настройкам", callback_data="settings")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.answer()  # Теперь это безопасно, так как query не None
+        await query.edit_message_text(text=stats_message, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        # Если вызвано напрямую через команду
+        await update.message.reply_text(stats_message, parse_mode="Markdown")
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Полностью сбрасывает данные аккаунта"""
@@ -3131,17 +2447,6 @@ async def update_nitter_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
-async def toggle_proxies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Включает/выключает использование прокси"""
-    settings = get_settings()
-    current = settings.get("use_proxies", False)
-    settings["use_proxies"] = not current
-    save_json(SETTINGS_FILE, settings)
-
-    # Переходим обратно в настройки
-    await cmd_settings(update, context)
-
-
 async def toggle_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Включает/выключает мониторинг"""
     settings = get_settings()
@@ -3186,10 +2491,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await check_all_accounts(update, context)
     elif query.data == "settings":
         await cmd_settings(update, context)
-    elif query.data == "toggle_proxies":
-        await toggle_proxies(update, context)
     elif query.data == "toggle_monitoring":
         await toggle_monitoring(update, context)
+    elif query.data == "cmd_stats":
+        await cmd_stats(update, context)
     elif query.data == "clearcache":
         await cmd_clearcache(update, context)
     elif query.data == "set_interval":
@@ -3201,20 +2506,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("method_priority:"):
         method = query.data.split(":", 1)[1]
         await change_method_priority(update, context, method)
-    elif query.data == "open_safari":
-        success = launch_safari_for_scraping()
-        if success:
-            await query.edit_message_text(
-                "✅ Safari запущен с Twitter.\n\n"
-                "1. Войдите в свой аккаунт Twitter\n"
-                "2. После входа НЕ закрывайте браузер\n"
-                "3. Теперь вы можете использовать методы скрапинга с помощью `/methods username web`"
-            )
-        else:
-            await query.edit_message_text(
-                "❌ Не удалось запустить Safari.\n"
-                "Проверьте, что Safari установлен и доступен."
-            )
 
 
 async def check_all_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3230,7 +2521,6 @@ async def check_all_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await message.edit_text("Список пуст. Добавьте аккаунты с помощью команды /add <username>")
 
     settings = get_settings()
-    use_proxies = settings.get("use_proxies", False)
     methods = settings.get("scraper_methods", ["nitter", "web", "api"])
 
     results = []
@@ -3260,7 +2550,7 @@ async def check_all_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE)
             delete_from_cache("tweets", f"api_{username.lower()}")
 
             user_id, tweet_id, tweet_data, method = await check_tweet_multi_method(
-                display_name, account_methods, use_proxies
+                display_name, account_methods,
             )
 
             if user_id and not account.get('user_id'):
@@ -3380,7 +2670,6 @@ def main():
         (SETTINGS_FILE, {
             "check_interval": DEFAULT_CHECK_INTERVAL,
             "enabled": True,
-            "use_proxies": False,
             "scraper_methods": ["nitter", "web", "api"],
             "max_retries": 3,
             "cache_expiry": 1800,
@@ -3397,10 +2686,6 @@ def main():
         if not os.path.exists(path):
             save_json(path, default)
 
-    # Проверяем наличие файла статистики браузеров
-    if not os.path.exists(BROWSER_STATS_FILE):
-        save_json(BROWSER_STATS_FILE, {"browsers": {}, "last_update": int(time.time())})
-
     app = ApplicationBuilder().token(TG_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
 
     # Регистрируем обработчики команд
@@ -3413,12 +2698,11 @@ def main():
     app.add_handler(CommandHandler("interval", set_interval_menu))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("methods", cmd_methods))
-    app.add_handler(CommandHandler("auth", cmd_auth))
-    app.add_handler(CommandHandler("auth_chrome", cmd_auth_chrome))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("update_nitter", cmd_update_nitter))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_error_handler(error_handler)
 
     settings = get_settings()
     interval_mins = settings["check_interval"] // 60
