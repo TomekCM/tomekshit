@@ -397,41 +397,38 @@ def clean_account_data(username):
     logger.info(f"Данные для аккаунта @{username} очищены")
 
 
+# 2. Улучшение выбора Nitter-инстансов
 async def check_nitter_instance_status(instance):
-    """Проверяет работоспособность Nitter-инстанса"""
+    """Проверка с определением качества соединения"""
     try:
-        timeout = aiohttp.ClientTimeout(total=5)  # Короткий таймаут
+        start_time = time.time()
+        timeout = aiohttp.ClientTimeout(total=5)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(f"{instance}/", headers={"User-Agent": "Mozilla/5.0"}) as response:
                 if response.status == 200:
-                    try:
-                        text = await response.text()
-                        if "nitter" in text.lower() or "twitter" in text.lower():
-                            return True
-                    except:
-                        pass
-        return False
+                    text = await response.text()
+                    if "nitter" in text.lower() or "twitter" in text.lower():
+                        # Измеряем время ответа как показатель качества
+                        response_time = time.time() - start_time
+                        return True, response_time
+        return False, 999
     except:
-        return False
+        return False, 999
 
 
 async def get_working_nitter_instances():
-    """Возвращает список работающих Nitter-инстансов"""
-    working_instances = []
+    """Возвращает отсортированный по скорости список инстансов"""
+    results = []
     tasks = [check_nitter_instance_status(instance) for instance in NITTER_INSTANCES]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-    for i, is_working in enumerate(results):
-        if is_working and not isinstance(is_working, Exception):
-            working_instances.append(NITTER_INSTANCES[i])
-            logger.info(f"Nitter инстанс доступен: {NITTER_INSTANCES[i]}")
+    for i, result in enumerate(responses):
+        if isinstance(result, tuple) and result[0]:
+            results.append((NITTER_INSTANCES[i], result[1]))  # (url, response_time)
 
-    if working_instances:
-        return working_instances
-    else:
-        logger.warning("Нет доступных Nitter-инстансов. Используем список по умолчанию.")
-        # Возвращаем первые 3 инстанса из списка, даже если они не работают
-        return NITTER_INSTANCES[:3]
+    # Сортируем по времени отклика
+    results.sort(key=lambda x: x[1])
+    return [url for url, _ in results] or NITTER_INSTANCES[:3]
 
 
 async def update_nitter_instances():
